@@ -2,7 +2,8 @@ import type { SnapshotResult } from '@agent-device/contracts/interactor-types';
 import type { ScrollDirection } from '@agent-device/contracts/scroll-gesture';
 import { AppError, discloseDispatch } from '@agent-device/kernel/errors';
 import type { Platform, PublicPlatform } from '@agent-device/kernel/device';
-import type { SnapshotNode } from '@agent-device/kernel/snapshot';
+import type { SnapshotNode, SnapshotState } from '@agent-device/kernel/snapshot';
+import { sparseCaptureQuality } from '@agent-device/selectors/absence-observation';
 import { createSnapshotVisibility } from '@agent-device/contracts/snapshot';
 import { evaluateIsPredicate } from '@agent-device/selectors';
 import { resolveSelectorPipeline } from '@agent-device/selectors/selector-pipeline';
@@ -15,7 +16,6 @@ import {
   verticalEdgeFor,
   type ScrollCaptureRefusal,
 } from '@agent-device/capture-kit/scroll-edge-state';
-import { scrollCaptureRefusal } from './scroll-capture-refusal.ts';
 
 /**
  * Everything `scroll --until <selector>` needs beyond the ordinary scroll: when a pass has arrived,
@@ -23,7 +23,8 @@ import { scrollCaptureRefusal } from './scroll-capture-refusal.ts';
  *
  * One module beside the route that runs it. `scroll` reaches a device in exactly one place (ADR
  * 0019, `scroll-runtime.ts`), so there is no second caller to keep in agreement and no reason for
- * this to be a package surface.
+ * this to be a package surface. `scroll top`/`scroll bottom` borrow `scrollCaptureRefusal` from
+ * here so both loops share one definition of readable without loading another module.
  */
 
 /**
@@ -133,6 +134,36 @@ async function isSelectorVisible(
   return matched.some(
     (node) => evaluateIsPredicate({ predicate: 'visible', node, visibility, platform }).pass,
   );
+}
+
+/**
+ * Whether a scroll capture can answer anything at all, for every scroll loop. Sparseness is the
+ * question absence assertions ask, answered by the same helper rather than a second definition of
+ * readable. Truncation is deliberately NOT refused: a truncated tree is real and readable with its
+ * tail missing, and refusing it would fail large screens where the answer is plainly in view.
+ */
+export function scrollCaptureRefusal(result: SnapshotResult): ScrollCaptureRefusal | undefined {
+  const nodes = result.nodes;
+  if (nodes === undefined) {
+    return { reason: 'no-capture', detail: 'the capture returned no accessibility tree' };
+  }
+  // Sparseness first: a backend that names why its tree is unusable (the Android helper's
+  // presentation failure ships no nodes and a sparse verdict) gives the better answer.
+  const sparse = sparseCaptureQuality({
+    backend: result.backend as SnapshotState['backend'],
+    nodes: nodes as SnapshotNode[],
+    ...(result.quality ? { snapshotQuality: result.quality } : {}),
+  });
+  if (sparse) {
+    return {
+      reason: 'sparse-tree',
+      detail: sparse.reason ?? 'the capture backend reported a sparse tree',
+    };
+  }
+  if (nodes.length === 0) {
+    return { reason: 'no-capture', detail: 'the capture returned an empty accessibility tree' };
+  }
+  return undefined;
 }
 
 /** The content ran out, or the budget did. Separate messages: the corrective action differs. */

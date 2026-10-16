@@ -29,8 +29,11 @@ import {
   type ScrollEdgeObservation,
 } from '@agent-device/capture-kit/scroll-edge-state';
 import type { SnapshotResult } from '@agent-device/contracts/interactor-types';
-import { formatScrollUntilMessage, runScrollUntilVisible } from './scroll-until.ts';
-import { scrollCaptureRefusal } from './scroll-capture-refusal.ts';
+import {
+  formatScrollUntilMessage,
+  runScrollUntilVisible,
+  scrollCaptureRefusal,
+} from './scroll-until.ts';
 import { publicPlatformString } from '@agent-device/kernel/device';
 import type { CommandFlags } from '@agent-device/contracts/command';
 import { withSuccessText } from '@agent-device/kernel/success-text';
