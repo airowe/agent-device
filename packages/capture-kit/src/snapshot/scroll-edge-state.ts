@@ -35,6 +35,16 @@ export type ScrollEdgeState = {
   fingerprint?: string;
 };
 
+/**
+ * Why a capture cannot answer a scroll loop's question at all. Never an outcome about the content:
+ * a failed or sparse read coerced to an empty tree is what the edge analyzer reads as "no hidden
+ * content", so it has to be refused before anything decides on it.
+ */
+export type ScrollCaptureRefusal = { reason: 'no-capture' | 'sparse-tree'; detail: string };
+
+/** What one edge capture yields: an analyzed state, or the refusal that kept it from being read. */
+export type ScrollEdgeObservation = ScrollEdgeState | { refused: ScrollCaptureRefusal };
+
 export type ScrollEdgeTarget = {
   point?: Point;
   nodeIndex?: number;
@@ -143,9 +153,24 @@ export function pushScrollSurfaceSignature(
   if (recentSignatures.length > window) recentSignatures.shift();
 }
 
-export async function runScrollEdgePasses<TResult>(params: {
-  edge: ScrollEdge;
-  captureState: (scope?: string) => Promise<ScrollEdgeState>;
+/**
+ * The one scroll pass loop: observe, refuse an unreadable observation, ask the caller's stop
+ * condition, then spend a pass. `scroll top`/`scroll bottom` and `scroll --until` differ only in
+ * what stops them and what they call a failure, so every other rule lives here once: the refusal
+ * lands before the stop condition reads anything, the budget is checked before the stuck window so
+ * an explicit small budget still reports itself, and the first observation precedes the first
+ * gesture so an already-satisfied stop costs no scroll.
+ */
+export async function runScrollPasses<TObservation, TResult>(params: {
+  observe: () => Promise<TObservation>;
+  refuse: (observation: TObservation) => AppError | undefined;
+  /** True ends the loop with this pass count; a terminal outcome of its own throws instead. */
+  shouldStop: (observation: TObservation, passes: number) => Promise<boolean>;
+  passLimit: number;
+  passLimitError: (passes: number) => AppError;
+  /** The surface signature the stuck window tracks; `undefined` keeps a pass out of it. */
+  fingerprint: (observation: TObservation) => Promise<string | undefined>;
+  noProgressError: (passes: number) => AppError;
   scroll: () => Promise<TResult>;
   /**
    * Waits for the previous fling to come to rest before the next capture. A rubber-banded scroll
@@ -155,19 +180,58 @@ export async function runScrollEdgePasses<TResult>(params: {
    */
   settleAfterPass?: () => Promise<void>;
 }): Promise<{ passes: number; result?: TResult }> {
-  const { edge, captureState, scroll, settleAfterPass = async () => {} } = params;
-  let state = await captureState();
-  if (state.scope) {
-    state = await captureState(state.scope);
-  }
-
+  const { observe, refuse, shouldStop, passLimit, scroll, settleAfterPass } = params;
   let passes = 0;
   let result: TResult | undefined;
   const recentSignatures: string[] = [];
-  pushScrollSurfaceSignature(recentSignatures, state.fingerprint, SCROLL_EDGE_STUCK_WINDOW);
-  while (state.canScroll) {
-    if (passes >= SCROLL_EDGE_PASS_LIMIT) {
-      throw new AppError(
+  while (true) {
+    const observation = await observe();
+    const refusal = refuse(observation);
+    if (refusal) throw refusal;
+    if (await shouldStop(observation, passes)) return { passes, result };
+    if (passes >= passLimit) throw params.passLimitError(passes);
+    pushScrollSurfaceSignature(
+      recentSignatures,
+      await params.fingerprint(observation),
+      SCROLL_EDGE_STUCK_WINDOW,
+    );
+    if (scrollSurfaceIsStuck(recentSignatures)) throw params.noProgressError(passes);
+    result = await scroll();
+    passes += 1;
+    await settleAfterPass?.();
+  }
+}
+
+export async function runScrollEdgePasses<TResult>(params: {
+  edge: ScrollEdge;
+  captureState: (scope?: string) => Promise<ScrollEdgeObservation>;
+  scroll: () => Promise<TResult>;
+  settleAfterPass?: () => Promise<void>;
+}): Promise<{ passes: number; result?: TResult }> {
+  const { edge, captureState, scroll, settleAfterPass } = params;
+  // The first capture discovers the container; every later one reads the scope the previous state
+  // named, so the loop verifies against the scroller it decided on rather than the whole tree.
+  let scope: string | undefined;
+  let discovered = false;
+  const observe = async (): Promise<ScrollEdgeObservation> => {
+    let observation = await captureState(scope);
+    if (!discovered) {
+      discovered = true;
+      if (!('refused' in observation) && observation.scope) {
+        observation = await captureState(observation.scope);
+      }
+    }
+    if (!('refused' in observation)) scope = observation.scope;
+    return observation;
+  };
+  return await runScrollPasses({
+    observe,
+    refuse: (observation) =>
+      'refused' in observation ? buildScrollEdgeCaptureError(edge, observation.refused) : undefined,
+    shouldStop: async (observation) => !('refused' in observation) && !observation.canScroll,
+    passLimit: SCROLL_EDGE_PASS_LIMIT,
+    passLimitError: (passes) =>
+      new AppError(
         'COMMAND_FAILED',
         `scroll ${edge} reached the safety limit before the snapshot showed the edge`,
         {
@@ -176,21 +240,13 @@ export async function runScrollEdgePasses<TResult>(params: {
           passes,
           hint: 'The scoped scroll container still reports hidden content. Run scroll <dir> --until <selector> to stop on the element you are after, or snapshot -i to inspect the current state.',
         },
-      );
-    }
-
-    result = await scroll();
-    passes += 1;
-    await settleAfterPass();
-    state = await captureState(state.scope);
-
-    pushScrollSurfaceSignature(recentSignatures, state.fingerprint, SCROLL_EDGE_STUCK_WINDOW);
-    if (state.canScroll && scrollSurfaceIsStuck(recentSignatures)) {
-      throw buildScrollEdgeNoProgressError(edge, passes);
-    }
-  }
-
-  return { passes, result };
+      ),
+    fingerprint: async (observation) =>
+      'refused' in observation ? undefined : observation.fingerprint,
+    noProgressError: (passes) => buildScrollEdgeNoProgressError(edge, passes),
+    scroll,
+    ...(settleAfterPass ? { settleAfterPass } : {}),
+  });
 }
 
 /**
@@ -275,6 +331,22 @@ export function scrollNoProgressHint(
   return (
     reached +
     ` Some lists ignore synthesized scrolls — a raw drag moves them: swipe x1 y1 x2 y2 started inside the list.`
+  );
+}
+
+function buildScrollEdgeCaptureError(edge: ScrollEdge, refusal: ScrollCaptureRefusal): AppError {
+  return new AppError(
+    'COMMAND_FAILED',
+    `scroll ${edge} could not read the screen: ${refusal.detail}`,
+    {
+      reason: 'scroll_edge_capture_unreadable',
+      edge,
+      captureRefusal: refusal.reason,
+      hint:
+        refusal.reason === 'no-capture'
+          ? 'Run snapshot -i to see whether the app is producing an accessibility tree at all, and retry once it does.'
+          : 'The accessibility tree came back sparse, so it cannot show whether content remains. Run screenshot, inspect the image, and navigate by coordinates until snapshot -i reports a full tree.',
+    },
   );
 }
 

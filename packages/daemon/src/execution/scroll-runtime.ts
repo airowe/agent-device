@@ -26,9 +26,11 @@ import {
   runScrollEdgePasses,
   scrollSurfaceFingerprint,
   type ScrollEdge,
-  type ScrollEdgeState,
+  type ScrollEdgeObservation,
 } from '@agent-device/capture-kit/scroll-edge-state';
+import type { SnapshotResult } from '@agent-device/contracts/interactor-types';
 import { formatScrollUntilMessage, runScrollUntilVisible } from './scroll-until.ts';
+import { scrollCaptureRefusal } from './scroll-capture-refusal.ts';
 import { publicPlatformString } from '@agent-device/kernel/device';
 import type { CommandFlags } from '@agent-device/contracts/command';
 import { withSuccessText } from '@agent-device/kernel/success-text';
@@ -295,7 +297,7 @@ function swipeEvidence(result: Record<string, unknown>): ScrollSwipeEvidence {
   };
 }
 
-/** Repeats the pass while the verified state still moves; the capture needs no guard here. */
+/** Repeats the pass while the verified state still moves; the loop refuses an unreadable capture. */
 async function executeEdgeScroll(
   runtime: BoundScrollEdge,
   edge: ScrollEdge,
@@ -309,9 +311,9 @@ async function executeEdgeScroll(
   const edgeResult = await runScrollEdgePasses({
     edge,
     captureState: async (stateScope) => {
-      const state = await captureEdgeState(runtime, edge, stateScope, context);
-      scope = state.scope ?? scope;
-      return state;
+      const observation = await captureEdgeState(runtime, edge, stateScope, context);
+      if (!('refused' in observation)) scope = observation.scope ?? scope;
+      return observation;
     },
     scroll: async () => await scrollOnce(runtime, target, options, context),
     settleAfterPass: async () => {
@@ -355,22 +357,30 @@ async function executeUntilScroll(
   );
 }
 
+/**
+ * One edge read, refused when the capture cannot show the screen. Refusal is decided on the capture
+ * the analyzer last read — after an empty scoped tree, that is the unscoped retry — so neither a
+ * failed read nor a sparse one reaches the edge verdict as "no hidden content" (#2468).
+ */
 async function captureEdgeState(
   runtime: BoundScrollEdge,
   edge: ScrollEdge,
   scope: string | undefined,
   context: DaemonCommandContext,
-): Promise<ScrollEdgeState> {
-  return await captureScrollEdgeState({
+): Promise<ScrollEdgeObservation> {
+  let lastCapture: SnapshotResult | undefined;
+  const state = await captureScrollEdgeState({
     edge,
     scope,
-    captureNodes: async (snapshotScope) =>
-      (
-        await runtime.operations.captureSnapshot(
-          scrollCaptureInput(context, { scope: snapshotScope }),
-        )
-      ).nodes ?? [],
+    captureNodes: async (snapshotScope) => {
+      lastCapture = await runtime.operations.captureSnapshot(
+        scrollCaptureInput(context, { scope: snapshotScope }),
+      );
+      return lastCapture.nodes ?? [];
+    },
   });
+  const refused = lastCapture && scrollCaptureRefusal(lastCapture);
+  return refused ? { refused } : state;
 }
 
 /** The single lexical owner of the bound call (R53); the edge binding satisfies this shape too. */
