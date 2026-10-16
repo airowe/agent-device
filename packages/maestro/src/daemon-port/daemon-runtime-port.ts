@@ -132,7 +132,16 @@ function createDaemonMaestroRuntimeParts(options: CreateDaemonMaestroRuntimeOper
     context: MaestroRuntimeOperationContext,
   ): Promise<void> => {
     registerDiagnosticSensitiveValue(text);
-    await invokeMutation({ kind: 'typeText', text }, context);
+    await invokeMutation(
+      {
+        kind: 'typeText',
+        text,
+        ...(platform === 'android'
+          ? { delayMs: MAESTRO_RUNTIME_ADAPTER_POLICY.androidInputTextCharacterDelayMs }
+          : {}),
+      },
+      context,
+    );
     const stable = await waitForTypedSnapshotStability({
       timeoutMs: MAESTRO_RUNTIME_ADAPTER_POLICY.settleTimeoutMs,
       context,

@@ -25,6 +25,8 @@ export const MAESTRO_COMPATIBILITY_PRESETS = {
     scrollUntilVisibleSpeed: 40,
     scrollUntilVisiblePercentage: 100,
     eraseTextMaxCharacters: 50,
+    // MaestroDriverService.kt types inputText one character at a time on Android.
+    androidInputTextCharacterDelayMs: 75,
   },
   // ScreenshotUtils.waitForAppToSettle and MAX_TIMEOUT_WAIT_TO_SETTLE_MS.
   observation: {
