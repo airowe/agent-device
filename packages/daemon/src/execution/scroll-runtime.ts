@@ -305,18 +305,11 @@ async function executeEdgeScroll(
   options: ResolvedScrollExecutionOptions,
   context: DaemonCommandContext,
 ): Promise<Record<string, unknown>> {
-  // The loop discovers its scope from the first capture; the rest-wait has to watch the same
-  // scoped container the loop decides on, so it reads the scope this closure records.
-  let scope: string | undefined;
   const edgeResult = await runScrollEdgePasses({
     edge,
-    captureState: async (stateScope) => {
-      const observation = await captureEdgeState(runtime, edge, stateScope, context);
-      if (!('refused' in observation)) scope = observation.scope ?? scope;
-      return observation;
-    },
+    captureState: async (scope) => await captureEdgeState(runtime, edge, scope, context),
     scroll: async () => await scrollOnce(runtime, target, options, context),
-    settleAfterPass: async () => {
+    settleAfterPass: async (scope) => {
       await pollForScrollRest(
         async () =>
           (await runtime.operations.captureSnapshot(scrollCaptureInput(context, { scope })))

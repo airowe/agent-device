@@ -14,9 +14,8 @@ export function scrollCaptureRefusal(result: SnapshotResult): ScrollCaptureRefus
   if (nodes === undefined) {
     return { reason: 'no-capture', detail: 'the capture returned no accessibility tree' };
   }
-  if (nodes.length === 0) {
-    return { reason: 'no-capture', detail: 'the capture returned an empty accessibility tree' };
-  }
+  // Sparseness first: a backend that names why its tree is unusable (the Android helper's
+  // presentation failure ships no nodes and a sparse verdict) gives the better answer.
   const sparse = sparseCaptureQuality({
     backend: result.backend as SnapshotState['backend'],
     nodes: nodes as SnapshotNode[],
@@ -27,6 +26,9 @@ export function scrollCaptureRefusal(result: SnapshotResult): ScrollCaptureRefus
       reason: 'sparse-tree',
       detail: sparse.reason ?? 'the capture backend reported a sparse tree',
     };
+  }
+  if (nodes.length === 0) {
+    return { reason: 'no-capture', detail: 'the capture returned an empty accessibility tree' };
   }
   return undefined;
 }

@@ -45,6 +45,12 @@ export type ScrollCaptureRefusal = { reason: 'no-capture' | 'sparse-tree'; detai
 /** What one edge capture yields: an analyzed state, or the refusal that kept it from being read. */
 export type ScrollEdgeObservation = ScrollEdgeState | { refused: ScrollCaptureRefusal };
 
+function isScrollEdgeRefused(
+  observation: ScrollEdgeObservation,
+): observation is { refused: ScrollCaptureRefusal } {
+  return 'refused' in observation;
+}
+
 export type ScrollEdgeTarget = {
   point?: Point;
   nodeIndex?: number;
@@ -140,10 +146,10 @@ export function scrollSurfaceIsStuck(recentSignatures: readonly string[]): boole
 /**
  * Records one pass's surface signature, capped to the trailing window the stuck detector reads. An
  * empty signature is skipped so a container with no positioned descendants stays on its edge/pass
- * signals instead of stacking blanks. Both scroll loops push through here so "one window" has one
- * definition rather than a copy that can drift.
+ * signals instead of stacking blanks. `runScrollPasses` is its one caller, so every scroll loop
+ * reads the same window.
  */
-export function pushScrollSurfaceSignature(
+function pushScrollSurfaceSignature(
   recentSignatures: string[],
   fingerprint: string | undefined,
   window: number,
@@ -206,7 +212,8 @@ export async function runScrollEdgePasses<TResult>(params: {
   edge: ScrollEdge;
   captureState: (scope?: string) => Promise<ScrollEdgeObservation>;
   scroll: () => Promise<TResult>;
-  settleAfterPass?: () => Promise<void>;
+  /** The rest-wait, handed the scope the loop is deciding on so it watches the same container. */
+  settleAfterPass?: (scope: string | undefined) => Promise<void>;
 }): Promise<{ passes: number; result?: TResult }> {
   const { edge, captureState, scroll, settleAfterPass } = params;
   // The first capture discovers the container; every later one reads the scope the previous state
@@ -217,18 +224,20 @@ export async function runScrollEdgePasses<TResult>(params: {
     let observation = await captureState(scope);
     if (!discovered) {
       discovered = true;
-      if (!('refused' in observation) && observation.scope) {
+      if (!isScrollEdgeRefused(observation) && observation.scope) {
         observation = await captureState(observation.scope);
       }
     }
-    if (!('refused' in observation)) scope = observation.scope;
+    if (!isScrollEdgeRefused(observation)) scope = observation.scope;
     return observation;
   };
   return await runScrollPasses({
     observe,
     refuse: (observation) =>
-      'refused' in observation ? buildScrollEdgeCaptureError(edge, observation.refused) : undefined,
-    shouldStop: async (observation) => !('refused' in observation) && !observation.canScroll,
+      isScrollEdgeRefused(observation)
+        ? buildScrollEdgeCaptureError(edge, observation.refused)
+        : undefined,
+    shouldStop: async (observation) => !isScrollEdgeRefused(observation) && !observation.canScroll,
     passLimit: SCROLL_EDGE_PASS_LIMIT,
     passLimitError: (passes) =>
       new AppError(
@@ -242,10 +251,10 @@ export async function runScrollEdgePasses<TResult>(params: {
         },
       ),
     fingerprint: async (observation) =>
-      'refused' in observation ? undefined : observation.fingerprint,
+      isScrollEdgeRefused(observation) ? undefined : observation.fingerprint,
     noProgressError: (passes) => buildScrollEdgeNoProgressError(edge, passes),
     scroll,
-    ...(settleAfterPass ? { settleAfterPass } : {}),
+    ...(settleAfterPass ? { settleAfterPass: async () => await settleAfterPass(scope) } : {}),
   });
 }
 

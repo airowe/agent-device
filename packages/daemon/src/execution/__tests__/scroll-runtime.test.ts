@@ -360,6 +360,17 @@ test.each([
     },
     refusal: 'sparse-tree',
   },
+  {
+    // The Android helper's presentation failure: no nodes, and a sparse verdict naming why. The
+    // backend's reason is the more useful answer, so it outranks the generic empty-tree refusal.
+    name: 'an empty tree the backend calls sparse',
+    frame: {
+      backend: 'xctest',
+      nodes: [],
+      quality: { state: 'sparse', backend: 'tree', reason: 'AX bridge unavailable' },
+    },
+    refusal: 'sparse-tree',
+  },
 ])(
   'bound scroll bottom refuses $name instead of reporting the edge',
   async ({ frame, refusal }) => {
