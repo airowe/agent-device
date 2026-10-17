@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { runScrollEdgePasses } from '../scroll-edge-state.ts';
 import { capture, scrollNode, windowRoot } from './scroll-edge-state-fixtures.ts';
 import { settingsHomeTree } from './scroll-edge-state-android-settings-fixture.ts';
+import type { SnapshotNode } from '@agent-device/kernel/snapshot';
+
+function subtreeFor(nodes: readonly SnapshotNode[], scope: string | undefined): SnapshotNode[] {
+  if (scope === undefined) return [...nodes];
+  const root = nodes.find((node) => node.identifier === scope);
+  if (!root) return [];
+  const inScope = new Set([root.index]);
+  for (const node of nodes) {
+    if (node.parentIndex !== undefined && inScope.has(node.parentIndex)) inScope.add(node.index);
+  }
+  return nodes.filter((node) => inScope.has(node.index));
+}
 
 // ---------------------------------------------------------------------------
 // A scroller nested in a scrollable ancestor with the same rect takes its edge hints from that
@@ -15,9 +27,17 @@ test('scroll top edge: the Android Settings list at the top reports no hidden co
   assert.equal(state.canScroll, false);
 });
 
-test('scroll top edge: the ancestor answers only the verdict, so selection still names the nested list', async () => {
-  const state = await capture(settingsHomeTree('at-top'), 'top');
-  assert.equal(state.scope, 'com.android.settings:id/recycler_view');
+test('scroll top on Android Settings already at the top costs no pass under scoped recapture', async () => {
+  // Scoped captures return only the scope root's subtree, as an Android scoped snapshot does.
+  const tree = settingsHomeTree('at-top');
+  const outcome = await runScrollEdgePasses({
+    edge: 'top',
+    captureState: async (scope) => await capture(subtreeFor(tree, scope), 'top'),
+    scroll: async () => {
+      throw new Error('scroll top dispatched a gesture at the top');
+    },
+  });
+  assert.equal(outcome.passes, 0);
 });
 
 test('scroll top edge: a cyclic chain of same-rect scrollables ends the ancestor walk', async () => {
@@ -29,7 +49,7 @@ test('scroll top edge: a cyclic chain of same-rect scrollables ends the ancestor
   ];
   const state = await capture(nodes, 'top');
   assert.equal(state.scope, 'first');
-  assert.equal(state.canScroll, false);
+  assert.equal(state.canScroll, true);
 });
 
 test('scroll top edge: the Android Settings list scrolled down still reports hidden content above', async () => {

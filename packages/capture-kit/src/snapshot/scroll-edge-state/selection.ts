@@ -35,12 +35,7 @@ export function analyzeScrollEdgeState(
     };
   }
 
-  // A scroller nested in a scrollable ancestor with the same rect answers the edge verdict with
-  // that ancestor's hints: Android's Settings RecyclerView offers scroll-backward even at the top,
-  // while the ScrollView framing the same pixels reports the real position (#3737). Selection and
-  // the snapshot's own per-node hints are unchanged.
-  const verdictNode = sameRectScrollableAncestor(container, nodes) ?? container;
-  const canScroll = hasHiddenContentAtEdge(verdictNode, hiddenHints.get(verdictNode.index), edge);
+  const canScroll = hasHiddenContentAtEdge(container, hiddenHints.get(container.index), edge);
   return {
     canScroll,
     emptySnapshot: false,
@@ -69,12 +64,20 @@ function selectScrollContainer(
   target: ScrollEdgeTarget,
 ): SnapshotNode | null {
   const visibility = createSnapshotVisibility(nodes);
-  const scrollables = nodes.filter((node) => isScrollableNodeLike(node) && isUsableRect(node.rect));
+  const edgeContainer = (node: SnapshotNode): SnapshotNode =>
+    sameRectScrollableAncestor(node, visibility.nodeByIndex) ?? node;
+  const scrollables = [
+    ...new Set(
+      nodes
+        .filter((node) => isScrollableNodeLike(node) && isUsableRect(node.rect))
+        .map(edgeContainer),
+    ),
+  ];
   if (scrollables.length === 0) return null;
 
   const targetAncestor = findNearestScrollableAncestor(target.nodeIndex, visibility.nodeByIndex);
   if (targetAncestor) {
-    return targetAncestor;
+    return edgeContainer(targetAncestor);
   }
 
   const targetPoint = target.point;
@@ -163,15 +166,17 @@ function hasHiddenContentAtEdge(
 }
 
 /**
- * The outermost scrollable in an unbroken chain of same-rect scrollable ancestors, or undefined
- * when the nearest scrollable ancestor frames different pixels. Visited indexes stop a cyclic
- * `parentIndex` chain in a malformed tree.
+ * The outermost scrollable in an unbroken chain of same-rect scrollable ancestors, or undefined when
+ * the nearest scrollable ancestor frames different pixels. Scroll edge selection stands that
+ * ancestor in for the nested scroller: Android's Settings RecyclerView offers scroll-backward even at
+ * the top, while the ScrollView framing the same pixels reports the real position (#3737). Choosing
+ * the ancestor also keeps the nested scroller inside the scoped recapture. Visited indexes stop a
+ * cyclic `parentIndex` chain in a malformed tree.
  */
 function sameRectScrollableAncestor(
   node: SnapshotNode,
-  nodes: readonly SnapshotNode[],
+  byIndex: ReadonlyMap<number, SnapshotNode>,
 ): SnapshotNode | undefined {
-  const byIndex = new Map(nodes.map((candidate) => [candidate.index, candidate] as const));
   const visited = new Set<number>([node.index]);
   let owner: SnapshotNode | undefined;
   let current = node;
