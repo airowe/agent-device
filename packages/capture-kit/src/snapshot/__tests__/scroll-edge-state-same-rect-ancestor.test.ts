@@ -90,3 +90,15 @@ test('scroll top edge: a nested scroller whose rect differs from its scrollable 
   assert.equal(state.scope, 'inner');
   assert.equal(state.canScroll, true);
 });
+
+test('scroll top edge: a targeted node in a cyclic chain with no scrollable ancestor ends the walk', async () => {
+  const nodes = [
+    windowRoot(),
+    scrollNode(1, { identifier: 'list', hiddenContentAbove: true }),
+    { ...scrollNode(2, { parentIndex: 3 }), type: 'Button', kind: 'button' },
+    { ...scrollNode(3, { parentIndex: 2 }), type: 'Group', kind: 'group' },
+  ];
+  const state = await capture(nodes, 'top', { nodeIndex: 2 });
+  assert.equal(state.scope, 'list');
+  assert.equal(state.canScroll, true);
+});

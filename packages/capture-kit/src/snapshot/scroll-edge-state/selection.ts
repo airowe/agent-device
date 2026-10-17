@@ -144,12 +144,14 @@ function findNearestScrollableAncestor(
   byIndex: ReadonlyMap<number, SnapshotNode>,
 ): SnapshotNode | null {
   if (nodeIndex === undefined) return null;
+  const visited = new Set<number>();
   let node = byIndex.get(nodeIndex);
-  while (node) {
+  while (node && !visited.has(node.index)) {
+    visited.add(node.index);
     if (isScrollableNodeLike(node) && isUsableRect(node.rect)) {
       return node;
     }
-    node = node.parentIndex === undefined ? undefined : byIndex.get(node.parentIndex);
+    node = parentOf(node, byIndex);
   }
   return null;
 }
