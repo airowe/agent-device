@@ -1,20 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { runScrollEdgePasses } from '../scroll-edge-state.ts';
-import { capture, scrollNode, windowRoot } from './scroll-edge-state-fixtures.ts';
+import { capture, scrollNode, subtreeFor, windowRoot } from './scroll-edge-state-fixtures.ts';
 import { settingsHomeTree } from './scroll-edge-state-android-settings-fixture.ts';
-import type { SnapshotNode } from '@agent-device/kernel/snapshot';
-
-function subtreeFor(nodes: readonly SnapshotNode[], scope: string | undefined): SnapshotNode[] {
-  if (scope === undefined) return [...nodes];
-  const root = nodes.find((node) => node.identifier === scope);
-  if (!root) return [];
-  const inScope = new Set([root.index]);
-  for (const node of nodes) {
-    if (node.parentIndex !== undefined && inScope.has(node.parentIndex)) inScope.add(node.index);
-  }
-  return nodes.filter((node) => inScope.has(node.index));
-}
 
 // ---------------------------------------------------------------------------
 // A scroller nested in a scrollable ancestor with the same rect takes its edge hints from that

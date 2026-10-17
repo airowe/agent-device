@@ -174,6 +174,10 @@ function hasHiddenContentAtEdge(
  * the top, while the ScrollView framing the same pixels reports the real position (#3737). Choosing
  * the ancestor also keeps the nested scroller inside the scoped recapture. Visited indexes stop a
  * cyclic `parentIndex` chain in a malformed tree.
+ *
+ * This is a geometric heuristic: an identical rect is taken to mean the two scrollers move the same
+ * content. It ignores scroll axis, so a horizontal scroller framing exactly the same pixels as a
+ * vertical list nested in it would stand in for that list. No known screen has that shape.
  */
 function sameRectScrollableAncestor(
   node: SnapshotNode,

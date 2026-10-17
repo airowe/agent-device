@@ -116,3 +116,18 @@ export async function captureThrows(scope: string | undefined): Promise<AppError
     throw error;
   }
 }
+
+/** The scope root's subtree, as an Android scoped snapshot returns it; the whole tree when unscoped. */
+export function subtreeFor(
+  nodes: readonly SnapshotNode[],
+  scope: string | undefined,
+): SnapshotNode[] {
+  if (scope === undefined) return [...nodes];
+  const root = nodes.find((node) => node.identifier === scope);
+  if (!root) return [];
+  const inScope = new Set([root.index]);
+  for (const node of nodes) {
+    if (node.parentIndex !== undefined && inScope.has(node.parentIndex)) inScope.add(node.index);
+  }
+  return nodes.filter((node) => inScope.has(node.index));
+}
