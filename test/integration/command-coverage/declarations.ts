@@ -18,6 +18,7 @@ import {
   ANDROID_APPLICATION_LIFECYCLE_CONTRACT_EVIDENCE,
   ANDROID_FOLD_RUNTIME_CONTRACT_EVIDENCE,
   ANDROID_HOVER_RUNTIME_CONTRACT_EVIDENCE,
+  ANDROID_TELEPHONY_RUNTIME_CONTRACT_EVIDENCE,
   ANDROID_TV_REMOTE_RUNTIME_CONTRACT_EVIDENCE,
   ANDROID_UNINSTALL_CONTRACT_EVIDENCE,
   ANDROID_VIEWPORT_RUNTIME_CONTRACT_EVIDENCE,
@@ -555,7 +556,10 @@ const COMMAND_COVERAGE_DECLARATIONS = {
       'uninstall reports the runtime-owned unavailable uninstall fact',
       'the web runtime fact rejects native app uninstall',
     ),
-    linux: linux.gap('No Linux-specific application uninstall command evidence exists yet'),
+    linux: linux.accepted(
+      'No Linux-specific application uninstall command evidence exists',
+      'Uninstall belongs to the app-deployment family the Linux runtime declares unavailable (unsupported-platform-leaf): a Linux desktop app is launched by name and there is no installed package model to remove, so the command refuses at admission and no lane will observe a Linux uninstall.',
+    ),
   },
   [C.push]: {
     androidEmulator: androidEmulator.live(
@@ -1429,6 +1433,37 @@ const COMMAND_COVERAGE_DECLARATIONS = {
       LINUX_RUNTIME_EVIDENCE.path,
       LINUX_RUNTIME_EVIDENCE.test,
       'the exact-owner runtime fact refuses a hinge pose on the Linux desktop',
+    ),
+  },
+  [C.telephony]: {
+    androidEmulator: androidEmulator.contract(
+      ANDROID_TELEPHONY_RUNTIME_CONTRACT_EVIDENCE,
+      'the Android emulator advertises the console telephony event and binds it; a physical device is refused by the fact',
+    ),
+    iosSimulator: iosSimulator.contract(
+      'packages/platform-apple/src/runtime.test.ts',
+      'refuses the telephony fact for the %s leaf',
+      'the exact-owner runtime fact refuses a simulated call or SMS on the iOS simulator leaf',
+    ),
+    macos: macos.contract(
+      'packages/platform-apple/src/runtime.test.ts',
+      'refuses the telephony fact for the %s leaf',
+      'the exact-owner runtime fact refuses a simulated call or SMS on the macOS host leaf',
+    ),
+    tvos: tvos.contract(
+      'packages/platform-apple/src/runtime.test.ts',
+      'refuses the telephony fact for the %s leaf',
+      'the exact-owner runtime fact refuses a simulated call or SMS on the tvOS leaf',
+    ),
+    web: web.contract(
+      'packages/platform-web/src/runtime.test.ts',
+      'clipboard, the app switcher, app events, settings and alerts carry no web bucket',
+      'the exact-owner runtime fact refuses a simulated call or SMS on the web target',
+    ),
+    linux: linux.contract(
+      LINUX_RUNTIME_EVIDENCE.path,
+      LINUX_RUNTIME_EVIDENCE.test,
+      'the exact-owner runtime fact refuses a simulated call or SMS on the Linux desktop',
     ),
   },
   [C.installFromSource]: {
