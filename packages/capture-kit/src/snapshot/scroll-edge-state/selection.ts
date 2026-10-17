@@ -26,11 +26,8 @@ export function analyzeScrollEdgeState(
     };
   }
 
-  const hasHiddenContentAtEdge = createEdgeHintReader(
-    nodes,
-    deriveMobileSnapshotHiddenContentHints(nodes),
-  );
-  const container = selectScrollContainer(nodes, hasHiddenContentAtEdge, edge, target);
+  const hiddenHints = deriveMobileSnapshotHiddenContentHints(nodes);
+  const container = selectScrollContainer(nodes, hiddenHints, edge, target);
   if (!container) {
     return {
       canScroll: false,
@@ -38,7 +35,12 @@ export function analyzeScrollEdgeState(
     };
   }
 
-  const canScroll = hasHiddenContentAtEdge(container, edge);
+  // A scroller nested in a scrollable ancestor with the same rect answers the edge verdict with
+  // that ancestor's hints: Android's Settings RecyclerView offers scroll-backward even at the top,
+  // while the ScrollView framing the same pixels reports the real position (#3737). Selection and
+  // the snapshot's own per-node hints are unchanged.
+  const verdictNode = sameRectScrollableAncestor(container, nodes) ?? container;
+  const canScroll = hasHiddenContentAtEdge(verdictNode, hiddenHints.get(verdictNode.index), edge);
   return {
     canScroll,
     emptySnapshot: false,
@@ -62,7 +64,7 @@ function normalizeSnapshotNodes(
 
 function selectScrollContainer(
   nodes: SnapshotNode[],
-  hasHiddenContentAtEdge: EdgeHintReader,
+  hiddenHints: Map<number, HiddenContentHint>,
   edge: ScrollEdge,
   target: ScrollEdgeTarget,
 ): SnapshotNode | null {
@@ -77,38 +79,28 @@ function selectScrollContainer(
 
   const targetPoint = target.point;
   if (targetPoint) {
-    const containing = selectPointScrollContainer(
-      scrollables,
-      hasHiddenContentAtEdge,
-      edge,
-      targetPoint,
-    );
+    const containing = selectPointScrollContainer(scrollables, hiddenHints, edge, targetPoint);
     if (containing) return containing;
-    return selectBroadScrollContainer(scrollables, hasHiddenContentAtEdge, edge, visibility);
+    return selectBroadScrollContainer(scrollables, hiddenHints, edge, visibility);
   }
 
   const viewportCenter = inferViewportCenter(nodes);
   if (viewportCenter) {
-    const centered = selectPointScrollContainer(
-      scrollables,
-      hasHiddenContentAtEdge,
-      edge,
-      viewportCenter,
-    );
+    const centered = selectPointScrollContainer(scrollables, hiddenHints, edge, viewportCenter);
     if (centered) return centered;
   }
 
-  return selectBroadScrollContainer(scrollables, hasHiddenContentAtEdge, edge, visibility);
+  return selectBroadScrollContainer(scrollables, hiddenHints, edge, visibility);
 }
 
 function selectBroadScrollContainer(
   scrollables: SnapshotNode[],
-  hasHiddenContentAtEdge: EdgeHintReader,
+  hiddenHints: Map<number, HiddenContentHint>,
   edge: ScrollEdge,
   visibility: ReturnType<typeof createSnapshotVisibility>,
 ): SnapshotNode | null {
   const withHiddenEdge = scrollables
-    .filter((node) => hasHiddenContentAtEdge(node, edge))
+    .filter((node) => hasHiddenContentAtEdge(node, hiddenHints.get(node.index), edge))
     .sort((a, b) => compareByArea(b, a));
   if (withHiddenEdge.length > 0) return withHiddenEdge[0] ?? null;
 
@@ -120,14 +112,16 @@ function selectBroadScrollContainer(
 
 function selectPointScrollContainer(
   scrollables: SnapshotNode[],
-  hasHiddenContentAtEdge: EdgeHintReader,
+  hiddenHints: Map<number, HiddenContentHint>,
   edge: ScrollEdge,
   point: Point,
 ): SnapshotNode | null {
   const containing = scrollables
     .filter((node) => node.rect && containsPoint(node.rect, point))
     .sort(compareByArea);
-  const withHiddenEdge = containing.find((node) => hasHiddenContentAtEdge(node, edge));
+  const withHiddenEdge = containing.find((node) =>
+    hasHiddenContentAtEdge(node, hiddenHints.get(node.index), edge),
+  );
   return withHiddenEdge ?? containing[0] ?? null;
 }
 
@@ -157,41 +151,48 @@ function findNearestScrollableAncestor(
   return null;
 }
 
-type EdgeHintReader = (node: SnapshotNode, edge: ScrollEdge) => boolean;
-
-/**
- * Reads a container's hidden-content hint for an edge verdict. A scroller nested in a scrollable
- * ancestor with the same rect answers with that ancestor's hints: Android's Settings RecyclerView
- * offers scroll-backward even at the top, while the ScrollView framing the same pixels reports the
- * real position (#3737). The snapshot's own per-node hints stay unchanged.
- */
-function createEdgeHintReader(
-  nodes: readonly SnapshotNode[],
-  hiddenHints: ReadonlyMap<number, HiddenContentHint>,
-): EdgeHintReader {
-  const byIndex = new Map(nodes.map((node) => [node.index, node] as const));
-  return (node, edge) => {
-    const owner = sameRectScrollableAncestor(node, byIndex) ?? node;
-    const hint = hiddenHints.get(owner.index);
-    if (edge === 'bottom') {
-      return owner.hiddenContentBelow === true || hint?.hiddenContentBelow === true;
-    }
-    return owner.hiddenContentAbove === true || hint?.hiddenContentAbove === true;
-  };
+function hasHiddenContentAtEdge(
+  node: SnapshotNode,
+  hint: HiddenContentHint | undefined,
+  edge: ScrollEdge,
+): boolean {
+  if (edge === 'bottom') {
+    return node.hiddenContentBelow === true || hint?.hiddenContentBelow === true;
+  }
+  return node.hiddenContentAbove === true || hint?.hiddenContentAbove === true;
 }
 
+/**
+ * The outermost scrollable in an unbroken chain of same-rect scrollable ancestors, or undefined
+ * when the nearest scrollable ancestor frames different pixels. Visited indexes stop a cyclic
+ * `parentIndex` chain in a malformed tree.
+ */
 function sameRectScrollableAncestor(
+  node: SnapshotNode,
+  nodes: readonly SnapshotNode[],
+): SnapshotNode | undefined {
+  const byIndex = new Map(nodes.map((candidate) => [candidate.index, candidate] as const));
+  const visited = new Set<number>([node.index]);
+  let owner: SnapshotNode | undefined;
+  let current = node;
+  let parent = parentOf(current, byIndex);
+  while (parent && !visited.has(parent.index)) {
+    visited.add(parent.index);
+    if (isScrollableNodeLike(parent) && isUsableRect(parent.rect)) {
+      if (!sameRect(parent.rect, current.rect)) return owner;
+      owner = parent;
+      current = parent;
+    }
+    parent = parentOf(parent, byIndex);
+  }
+  return owner;
+}
+
+function parentOf(
   node: SnapshotNode,
   byIndex: ReadonlyMap<number, SnapshotNode>,
 ): SnapshotNode | undefined {
-  let owner: SnapshotNode | undefined;
-  let current = node;
-  while (true) {
-    const ancestor = findNearestScrollableAncestor(current.parentIndex, byIndex);
-    if (!ancestor || !sameRect(ancestor.rect, current.rect)) return owner;
-    owner = ancestor;
-    current = ancestor;
-  }
+  return node.parentIndex === undefined ? undefined : byIndex.get(node.parentIndex);
 }
 
 function sameRect(a: SnapshotNode['rect'], b: SnapshotNode['rect']): boolean {

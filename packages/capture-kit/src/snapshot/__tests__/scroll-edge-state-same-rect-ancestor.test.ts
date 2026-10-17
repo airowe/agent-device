@@ -15,6 +15,23 @@ test('scroll top edge: the Android Settings list at the top reports no hidden co
   assert.equal(state.canScroll, false);
 });
 
+test('scroll top edge: the ancestor answers only the verdict, so selection still names the nested list', async () => {
+  const state = await capture(settingsHomeTree('at-top'), 'top');
+  assert.equal(state.scope, 'com.android.settings:id/recycler_view');
+});
+
+test('scroll top edge: a cyclic chain of same-rect scrollables ends the ancestor walk', async () => {
+  const rect = { x: 0, y: 100, width: 400, height: 600 };
+  const nodes = [
+    windowRoot(),
+    scrollNode(1, { parentIndex: 2, identifier: 'first', hiddenContentAbove: true, rect }),
+    scrollNode(2, { parentIndex: 1, identifier: 'second', rect }),
+  ];
+  const state = await capture(nodes, 'top');
+  assert.equal(state.scope, 'first');
+  assert.equal(state.canScroll, false);
+});
+
 test('scroll top edge: the Android Settings list scrolled down still reports hidden content above', async () => {
   const state = await capture(settingsHomeTree('scrolled-down'), 'top');
   assert.equal(state.canScroll, true);
