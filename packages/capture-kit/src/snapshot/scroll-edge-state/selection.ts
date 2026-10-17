@@ -26,8 +26,11 @@ export function analyzeScrollEdgeState(
     };
   }
 
-  const hiddenHints = deriveMobileSnapshotHiddenContentHints(nodes);
-  const container = selectScrollContainer(nodes, hiddenHints, edge, target);
+  const hasHiddenContentAtEdge = createEdgeHintReader(
+    nodes,
+    deriveMobileSnapshotHiddenContentHints(nodes),
+  );
+  const container = selectScrollContainer(nodes, hasHiddenContentAtEdge, edge, target);
   if (!container) {
     return {
       canScroll: false,
@@ -35,7 +38,7 @@ export function analyzeScrollEdgeState(
     };
   }
 
-  const canScroll = hasHiddenContentAtEdge(container, hiddenHints.get(container.index), edge);
+  const canScroll = hasHiddenContentAtEdge(container, edge);
   return {
     canScroll,
     emptySnapshot: false,
@@ -59,7 +62,7 @@ function normalizeSnapshotNodes(
 
 function selectScrollContainer(
   nodes: SnapshotNode[],
-  hiddenHints: Map<number, HiddenContentHint>,
+  hasHiddenContentAtEdge: EdgeHintReader,
   edge: ScrollEdge,
   target: ScrollEdgeTarget,
 ): SnapshotNode | null {
@@ -74,28 +77,38 @@ function selectScrollContainer(
 
   const targetPoint = target.point;
   if (targetPoint) {
-    const containing = selectPointScrollContainer(scrollables, hiddenHints, edge, targetPoint);
+    const containing = selectPointScrollContainer(
+      scrollables,
+      hasHiddenContentAtEdge,
+      edge,
+      targetPoint,
+    );
     if (containing) return containing;
-    return selectBroadScrollContainer(scrollables, hiddenHints, edge, visibility);
+    return selectBroadScrollContainer(scrollables, hasHiddenContentAtEdge, edge, visibility);
   }
 
   const viewportCenter = inferViewportCenter(nodes);
   if (viewportCenter) {
-    const centered = selectPointScrollContainer(scrollables, hiddenHints, edge, viewportCenter);
+    const centered = selectPointScrollContainer(
+      scrollables,
+      hasHiddenContentAtEdge,
+      edge,
+      viewportCenter,
+    );
     if (centered) return centered;
   }
 
-  return selectBroadScrollContainer(scrollables, hiddenHints, edge, visibility);
+  return selectBroadScrollContainer(scrollables, hasHiddenContentAtEdge, edge, visibility);
 }
 
 function selectBroadScrollContainer(
   scrollables: SnapshotNode[],
-  hiddenHints: Map<number, HiddenContentHint>,
+  hasHiddenContentAtEdge: EdgeHintReader,
   edge: ScrollEdge,
   visibility: ReturnType<typeof createSnapshotVisibility>,
 ): SnapshotNode | null {
   const withHiddenEdge = scrollables
-    .filter((node) => hasHiddenContentAtEdge(node, hiddenHints.get(node.index), edge))
+    .filter((node) => hasHiddenContentAtEdge(node, edge))
     .sort((a, b) => compareByArea(b, a));
   if (withHiddenEdge.length > 0) return withHiddenEdge[0] ?? null;
 
@@ -107,16 +120,14 @@ function selectBroadScrollContainer(
 
 function selectPointScrollContainer(
   scrollables: SnapshotNode[],
-  hiddenHints: Map<number, HiddenContentHint>,
+  hasHiddenContentAtEdge: EdgeHintReader,
   edge: ScrollEdge,
   point: Point,
 ): SnapshotNode | null {
   const containing = scrollables
     .filter((node) => node.rect && containsPoint(node.rect, point))
     .sort(compareByArea);
-  const withHiddenEdge = containing.find((node) =>
-    hasHiddenContentAtEdge(node, hiddenHints.get(node.index), edge),
-  );
+  const withHiddenEdge = containing.find((node) => hasHiddenContentAtEdge(node, edge));
   return withHiddenEdge ?? containing[0] ?? null;
 }
 
@@ -146,15 +157,47 @@ function findNearestScrollableAncestor(
   return null;
 }
 
-function hasHiddenContentAtEdge(
+type EdgeHintReader = (node: SnapshotNode, edge: ScrollEdge) => boolean;
+
+/**
+ * Reads a container's hidden-content hint for an edge verdict. A scroller nested in a scrollable
+ * ancestor with the same rect answers with that ancestor's hints: Android's Settings RecyclerView
+ * offers scroll-backward even at the top, while the ScrollView framing the same pixels reports the
+ * real position (#3737). The snapshot's own per-node hints stay unchanged.
+ */
+function createEdgeHintReader(
+  nodes: readonly SnapshotNode[],
+  hiddenHints: ReadonlyMap<number, HiddenContentHint>,
+): EdgeHintReader {
+  const byIndex = new Map(nodes.map((node) => [node.index, node] as const));
+  return (node, edge) => {
+    const owner = sameRectScrollableAncestor(node, byIndex) ?? node;
+    const hint = hiddenHints.get(owner.index);
+    if (edge === 'bottom') {
+      return owner.hiddenContentBelow === true || hint?.hiddenContentBelow === true;
+    }
+    return owner.hiddenContentAbove === true || hint?.hiddenContentAbove === true;
+  };
+}
+
+function sameRectScrollableAncestor(
   node: SnapshotNode,
-  hint: HiddenContentHint | undefined,
-  edge: ScrollEdge,
-): boolean {
-  if (edge === 'bottom') {
-    return node.hiddenContentBelow === true || hint?.hiddenContentBelow === true;
+  byIndex: ReadonlyMap<number, SnapshotNode>,
+): SnapshotNode | undefined {
+  let owner: SnapshotNode | undefined;
+  let current = node;
+  while (true) {
+    const ancestor = findNearestScrollableAncestor(current.parentIndex, byIndex);
+    if (!ancestor || !sameRect(ancestor.rect, current.rect)) return owner;
+    owner = ancestor;
+    current = ancestor;
   }
-  return node.hiddenContentAbove === true || hint?.hiddenContentAbove === true;
+}
+
+function sameRect(a: SnapshotNode['rect'], b: SnapshotNode['rect']): boolean {
+  return Boolean(
+    a && b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height,
+  );
 }
 
 function buildScrollContainerScope(
