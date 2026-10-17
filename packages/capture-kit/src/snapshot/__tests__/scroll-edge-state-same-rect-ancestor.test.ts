@@ -90,3 +90,16 @@ test('scroll top edge: a targeted node in a cyclic chain with no scrollable ance
   assert.equal(state.scope, 'list');
   assert.equal(state.canScroll, true);
 });
+
+test('scroll bottom edge: a same-rect horizontal pager does not stand in for the vertical list on its page', async () => {
+  // A horizontal pager reports no vertical edge hints; its page's vertical list carries them.
+  const rect = { x: 0, y: 100, width: 400, height: 600 };
+  const nodes = [
+    windowRoot(),
+    scrollNode(1, { identifier: 'pager', rect }),
+    scrollNode(2, { parentIndex: 1, identifier: 'feed', hiddenContentBelow: true, rect }),
+  ];
+  const state = await capture(nodes, 'bottom');
+  assert.equal(state.scope, 'feed');
+  assert.equal(state.canScroll, true);
+});

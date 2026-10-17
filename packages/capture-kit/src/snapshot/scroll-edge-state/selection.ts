@@ -64,8 +64,11 @@ function selectScrollContainer(
   target: ScrollEdgeTarget,
 ): SnapshotNode | null {
   const visibility = createSnapshotVisibility(nodes);
+  const reportsVerticalEdge = (node: SnapshotNode): boolean =>
+    hasHiddenContentAtEdge(node, hiddenHints.get(node.index), 'top') ||
+    hasHiddenContentAtEdge(node, hiddenHints.get(node.index), 'bottom');
   const edgeContainer = (node: SnapshotNode): SnapshotNode =>
-    sameRectScrollableAncestor(node, visibility.nodeByIndex) ?? node;
+    sameRectScrollableAncestor(node, visibility.nodeByIndex, reportsVerticalEdge) ?? node;
   const scrollables = [
     ...new Set(
       nodes
@@ -168,20 +171,23 @@ function hasHiddenContentAtEdge(
 }
 
 /**
- * The outermost scrollable in an unbroken chain of same-rect scrollable ancestors, or undefined when
- * the nearest scrollable ancestor frames different pixels. Scroll edge selection stands that
- * ancestor in for the nested scroller: Android's Settings RecyclerView offers scroll-backward even at
- * the top, while the ScrollView framing the same pixels reports the real position (#3737). Choosing
- * the ancestor also keeps the nested scroller inside the scoped recapture. Visited indexes stop a
- * cyclic `parentIndex` chain in a malformed tree.
+ * The outermost scrollable in an unbroken chain of same-rect, vertically scrolling ancestors, or
+ * undefined when the nearest scrollable ancestor frames different pixels or reports no vertical edge.
+ * Scroll edge selection stands that ancestor in for the nested scroller: Android's Settings
+ * RecyclerView offers scroll-backward even at the top, while the ScrollView framing the same pixels
+ * reports the real position (#3737). Choosing the ancestor also keeps the nested scroller inside the
+ * scoped recapture. Visited indexes stop a cyclic `parentIndex` chain in a malformed tree.
  *
- * This is a geometric heuristic: an identical rect is taken to mean the two scrollers move the same
- * content. It ignores scroll axis, so a horizontal scroller framing exactly the same pixels as a
- * vertical list nested in it would stand in for that list. No known screen has that shape.
+ * An identical rect is a geometric heuristic for "these two scrollers move the same content", and
+ * geometry carries no scroll axis. Requiring the ancestor to report a vertical edge hint keeps a
+ * horizontal pager whose page holds a vertical list from standing in for that list; the snapshot
+ * emits vertical edge hints only for vertical scrollers. A vertical ancestor whose content fits in
+ * both directions reports no edge either, and leaves the nested scroller to answer for itself.
  */
 function sameRectScrollableAncestor(
   node: SnapshotNode,
   byIndex: ReadonlyMap<number, SnapshotNode>,
+  reportsVerticalEdge: (candidate: SnapshotNode) => boolean,
 ): SnapshotNode | undefined {
   const visited = new Set<number>([node.index]);
   let owner: SnapshotNode | undefined;
@@ -190,7 +196,7 @@ function sameRectScrollableAncestor(
   while (parent && !visited.has(parent.index)) {
     visited.add(parent.index);
     if (isScrollableNodeLike(parent) && isUsableRect(parent.rect)) {
-      if (!sameRect(parent.rect, current.rect)) return owner;
+      if (!sameRect(parent.rect, current.rect) || !reportsVerticalEdge(parent)) return owner;
       owner = parent;
       current = parent;
     }
