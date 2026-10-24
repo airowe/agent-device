@@ -84,17 +84,18 @@ export function createAndroidObservationAdapter(
 
 /**
  * Every variant one observation reads shares a single {@link DUMP_OBSERVATION_BUDGET_MS} budget,
- * so an observation costs at most one bound however many variants it walks. A read that times out
- * or finds the budget spent is an unanswered read, like one that printed nothing: the observation
- * reports `unknown` and never refuses the command.
+ * counted from its first dump read, so an observation costs at most one bound however many
+ * variants it walks. A read that times out or finds the budget spent is an unanswered read, like
+ * one that printed nothing: the observation reports `unknown` and never refuses the command.
  */
 function createDumpReader(host: AndroidObservationHost, device: DeviceInfo): DumpReader {
   const dumps = new Map<string, Promise<string>>();
-  const deadlineMs = Date.now() + DUMP_OBSERVATION_BUDGET_MS;
+  let deadlineMs: number | undefined;
   return (words) => {
     const key = words.join(' ');
     const cached = dumps.get(key);
     if (cached) return cached;
+    deadlineMs ??= Date.now() + DUMP_OBSERVATION_BUDGET_MS;
     const remainingMs = deadlineMs - Date.now();
     if (remainingMs <= 0) return Promise.resolve('');
     const pending = host
