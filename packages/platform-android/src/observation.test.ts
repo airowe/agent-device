@@ -100,55 +100,103 @@ test('a transient empty dump never demotes a variant that previously answered', 
   expect(calls[thirdReadStart]).toBe('shell dumpsys window windows');
 });
 
-function timedOutAdb(args: readonly string[]): AppError {
-  return new AppError('COMMAND_FAILED', 'adb timed out', { cmd: 'adb', args, timeoutMs: 1 });
+function timedOutAdb(args: readonly string[], timeoutMs: number): AppError {
+  return new AppError('COMMAND_FAILED', 'adb timed out', { cmd: 'adb', args, timeoutMs });
+}
+
+type Observer = ReturnType<typeof createAndroidObservationAdapter>;
+
+const QUESTIONS = [
+  {
+    question: 'foreground',
+    ask: (observer: Observer, target: DeviceInfo) => observer.readAppState(target),
+    unanswered: {},
+  },
+  {
+    question: 'blocking dialog',
+    ask: (observer: Observer, target: DeviceInfo) => observer.readBlockingDialog(target),
+    unanswered: { status: 'unknown' },
+  },
+] as const;
+
+/**
+ * A host whose every dump answers without a focus line after `spendMs(timeoutMs)` of a virtual
+ * clock, optionally timing out instead, so an observation walks every variant it is allowed to.
+ */
+function slowHost(params: { spendMs: (timeoutMs: number) => number; timeOut?: boolean }): {
+  host: AndroidObservationHost;
+  timeouts: number[];
+  restore: () => void;
+} {
+  const originMs = Date.now();
+  let elapsedMs = 0;
+  const now = vi.spyOn(Date, 'now').mockImplementation(() => originMs + elapsedMs);
+  const timeouts: number[] = [];
+  const host: AndroidObservationHost = {
+    ...hostFor(new Map()),
+    runAdb: vi.fn(async (_device, args, options) => {
+      const timeoutMs = options?.timeoutMs ?? Number.POSITIVE_INFINITY;
+      timeouts.push(timeoutMs);
+      elapsedMs += params.spendMs(timeoutMs);
+      if (params.timeOut) throw timedOutAdb(args, timeoutMs);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }),
+  };
+  return { host, timeouts, restore: () => now.mockRestore() };
 }
 
 test('bounds every dump read the foreground question makes', async () => {
-  const host = hostFor(new Map());
-  const observer = createAndroidObservationAdapter(host);
+  const { host, timeouts, restore } = slowHost({ spendMs: () => 0 });
+  try {
+    await createAndroidObservationAdapter(host).readAppState({ ...device, id: 'emulator-bounded' });
+  } finally {
+    restore();
+  }
 
-  await observer.readAppState({ ...device, id: 'emulator-bounded' });
-
-  const calls = vi.mocked(host.runAdb).mock.calls;
-  expect(calls.map(([, args]) => args.join(' '))).toEqual([
+  expect(vi.mocked(host.runAdb).mock.calls.map(([, args]) => args.join(' '))).toEqual([
     'shell dumpsys window windows',
     'shell dumpsys window',
     'shell dumpsys activity activities',
     'shell dumpsys activity',
   ]);
-  for (const [, , options] of calls) {
-    expect(options).toEqual({ allowFailure: true, timeoutMs: expect.any(Number) });
-    expect(options?.timeoutMs).toBeGreaterThan(0);
-  }
+  for (const timeoutMs of timeouts) expect(Number.isFinite(timeoutMs) && timeoutMs > 0).toBe(true);
 });
 
-test.each([
-  {
-    question: 'foreground',
-    ask: (observer: ReturnType<typeof createAndroidObservationAdapter>, target: DeviceInfo) =>
-      observer.readAppState(target),
-    unanswered: {},
-  },
-  {
-    question: 'blocking dialog',
-    ask: (observer: ReturnType<typeof createAndroidObservationAdapter>, target: DeviceInfo) =>
-      observer.readBlockingDialog(target),
-    unanswered: { status: 'unknown' },
-  },
-])(
-  'a timed-out dump leaves the $question question unanswered and reads no further variant',
-  async ({ question, ask, unanswered }) => {
-    const host: AndroidObservationHost = {
-      ...hostFor(new Map()),
-      runAdb: vi.fn(async (_device, args) => {
-        throw timedOutAdb(args);
-      }),
-    };
+test('later variants receive only what the earlier reads left of one observation budget', async () => {
+  const { host, timeouts, restore } = slowHost({
+    spendMs: (timeoutMs) => Math.floor(timeoutMs / 2),
+  });
+  try {
+    await createAndroidObservationAdapter(host).readAppState({ ...device, id: 'emulator-slow' });
+  } finally {
+    restore();
+  }
 
-    await expect(
-      ask(createAndroidObservationAdapter(host), { ...device, id: `emulator-hung-${question}` }),
-    ).resolves.toEqual(unanswered);
+  const budgetMs = timeouts[0]!;
+  expect(timeouts.length).toBeGreaterThan(1);
+  for (let index = 1; index < timeouts.length; index += 1) {
+    expect(timeouts[index]).toBe(timeouts[index - 1]! - Math.floor(timeouts[index - 1]! / 2));
+  }
+  const spentMs = timeouts.reduce((sum, timeoutMs) => sum + Math.floor(timeoutMs / 2), 0);
+  expect(spentMs).toBeLessThanOrEqual(budgetMs);
+});
+
+test.each(
+  QUESTIONS.flatMap((entry) => [
+    { ...entry, ending: 'times out', timeOut: true },
+    { ...entry, ending: 'answers at its bound', timeOut: false },
+  ]),
+)(
+  'a $question read that $ending spends the observation budget and leaves it unanswered',
+  async ({ question, ask, unanswered, timeOut }) => {
+    const { host, restore } = slowHost({ spendMs: (timeoutMs) => timeoutMs, timeOut });
+    try {
+      await expect(
+        ask(createAndroidObservationAdapter(host), { ...device, id: `emulator-${question}` }),
+      ).resolves.toEqual(unanswered);
+    } finally {
+      restore();
+    }
     expect(host.runAdb).toHaveBeenCalledTimes(1);
   },
 );
