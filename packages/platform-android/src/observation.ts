@@ -5,6 +5,7 @@ import type {
 } from '@agent-device/contracts/android-observation';
 import type { AppStateRuntimeResult } from '@agent-device/contracts/app-state-runtime';
 import type { DeviceInfo } from '@agent-device/kernel/device';
+import { isCommandTimeoutError } from '@agent-device/host-kit/command';
 import { deviceShellArgv } from '@agent-device/kernel/device-shell';
 import { AppError } from '@agent-device/kernel/errors';
 import {
@@ -31,6 +32,8 @@ const PERMISSION_PACKAGES = new Set([
   'com.android.packageinstaller',
   'com.google.android.packageinstaller',
 ]);
+
+const DUMP_READ_TIMEOUT_MS = 10_000;
 
 type Question = 'foreground' | 'blockingDialog';
 type DumpReader = (words: readonly string[]) => Promise<string>;
@@ -79,18 +82,35 @@ export function createAndroidObservationAdapter(
   });
 }
 
+/**
+ * A dump that times out is an unanswered read, like one that printed nothing: the observation
+ * reports `unknown` and never refuses the command. After one timeout the device is not answering,
+ * so the reader skips its remaining variants and an observation costs at most one bound.
+ */
 function createDumpReader(host: AndroidObservationHost, device: DeviceInfo): DumpReader {
   const dumps = new Map<string, Promise<string>>();
+  let timedOut = false;
   return (words) => {
+    if (timedOut) return Promise.resolve('');
     const key = words.join(' ');
     const pending =
       dumps.get(key) ??
       host
-        .runAdb(device, deviceShellArgv('adb', 'shell', words), { allowFailure: true })
-        .then((result) => {
-          recordSections(device, key, result.stdout);
-          return result.stdout;
-        });
+        .runAdb(device, deviceShellArgv('adb', 'shell', words), {
+          allowFailure: true,
+          timeoutMs: DUMP_READ_TIMEOUT_MS,
+        })
+        .then(
+          (result) => {
+            recordSections(device, key, result.stdout);
+            return result.stdout;
+          },
+          (error: unknown) => {
+            if (!isCommandTimeoutError(error)) throw error;
+            timedOut = true;
+            return '';
+          },
+        );
     dumps.set(key, pending);
     return pending;
   };
