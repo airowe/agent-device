@@ -6,6 +6,7 @@ import type {
 import type { AppStateRuntimeResult } from '@agent-device/contracts/app-state-runtime';
 import type { DeviceInfo } from '@agent-device/kernel/device';
 import { isCommandTimeoutError } from '@agent-device/host-kit/command';
+import { Deadline } from '@agent-device/host-kit/retry';
 import { deviceShellArgv } from '@agent-device/kernel/device-shell';
 import { AppError } from '@agent-device/kernel/errors';
 import {
@@ -90,18 +91,17 @@ export function createAndroidObservationAdapter(
  */
 function createDumpReader(host: AndroidObservationHost, device: DeviceInfo): DumpReader {
   const dumps = new Map<string, Promise<string>>();
-  let deadlineMs: number | undefined;
+  let deadline: Deadline | undefined;
   return (words) => {
     const key = words.join(' ');
     const cached = dumps.get(key);
     if (cached) return cached;
-    deadlineMs ??= Date.now() + DUMP_OBSERVATION_BUDGET_MS;
-    const remainingMs = deadlineMs - Date.now();
-    if (remainingMs <= 0) return Promise.resolve('');
+    deadline ??= Deadline.fromTimeoutMs(DUMP_OBSERVATION_BUDGET_MS);
+    if (deadline.isExpired()) return Promise.resolve('');
     const pending = host
       .runAdb(device, deviceShellArgv('adb', 'shell', words), {
         allowFailure: true,
-        timeoutMs: remainingMs,
+        timeoutMs: deadline.remainingMs(),
       })
       .then(
         (result) => {
