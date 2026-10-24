@@ -2,7 +2,13 @@ import { expect, test, vi } from 'vitest';
 import type { AndroidObservationHost } from '@agent-device/contracts/android-observation';
 import type { DeviceInfo } from '@agent-device/kernel/device';
 import { AppError } from '@agent-device/kernel/errors';
+import { runAndroidAutomationHelper } from './automation-helper.ts';
 import { createAndroidObservationAdapter } from './observation.ts';
+
+vi.mock('./automation-helper.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./automation-helper.ts')>()),
+  runAndroidAutomationHelper: vi.fn(async () => undefined),
+}));
 
 const device = {
   platform: 'android',
@@ -126,6 +132,7 @@ const QUESTIONS = [
 function slowHost(params: { spendMs: (timeoutMs: number) => number; timeOut?: boolean }): {
   host: AndroidObservationHost;
   timeouts: number[];
+  advance: (ms: number) => void;
   restore: () => void;
 } {
   const originMs = Date.now();
@@ -142,7 +149,14 @@ function slowHost(params: { spendMs: (timeoutMs: number) => number; timeOut?: bo
       return { exitCode: 0, stdout: '', stderr: '' };
     }),
   };
-  return { host, timeouts, restore: () => now.mockRestore() };
+  return {
+    host,
+    timeouts,
+    advance: (ms) => {
+      elapsedMs += ms;
+    },
+    restore: () => now.mockRestore(),
+  };
 }
 
 test('bounds every dump read the foreground question makes', async () => {
@@ -213,4 +227,33 @@ test('a dump that fails without timing out still fails the observation', async (
   await expect(
     createAndroidObservationAdapter(host).readAppState({ ...device, id: 'emulator-offline' }),
   ).rejects.toBe(failure);
+});
+
+test('the helper focus call before the first dump does not spend the dump budget', async () => {
+  const unhurried = slowHost({ spendMs: () => 0 });
+  try {
+    await createAndroidObservationAdapter(unhurried.host).readBlockingDialog({
+      ...device,
+      id: 'emulator-focus-fast',
+    });
+  } finally {
+    unhurried.restore();
+  }
+
+  const slowFocus = slowHost({ spendMs: () => 0 });
+  const focusCostMs = Math.floor(unhurried.timeouts[0]! / 2);
+  vi.mocked(runAndroidAutomationHelper).mockImplementationOnce(async () => {
+    slowFocus.advance(focusCostMs);
+    return undefined;
+  });
+  try {
+    await createAndroidObservationAdapter(slowFocus.host).readBlockingDialog({
+      ...device,
+      id: 'emulator-focus-slow',
+    });
+  } finally {
+    slowFocus.restore();
+  }
+
+  expect(slowFocus.timeouts[0]).toBe(unhurried.timeouts[0]);
 });
