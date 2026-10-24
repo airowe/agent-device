@@ -33,7 +33,7 @@ const PERMISSION_PACKAGES = new Set([
   'com.google.android.packageinstaller',
 ]);
 
-const DUMP_READ_TIMEOUT_MS = 10_000;
+const DUMP_OBSERVATION_BUDGET_MS = 10_000;
 
 type Question = 'foreground' | 'blockingDialog';
 type DumpReader = (words: readonly string[]) => Promise<string>;
@@ -83,34 +83,35 @@ export function createAndroidObservationAdapter(
 }
 
 /**
- * A dump that times out is an unanswered read, like one that printed nothing: the observation
- * reports `unknown` and never refuses the command. After one timeout the device is not answering,
- * so the reader skips its remaining variants and an observation costs at most one bound.
+ * Every variant one observation reads shares a single {@link DUMP_OBSERVATION_BUDGET_MS} budget,
+ * so an observation costs at most one bound however many variants it walks. A read that times out
+ * or finds the budget spent is an unanswered read, like one that printed nothing: the observation
+ * reports `unknown` and never refuses the command.
  */
 function createDumpReader(host: AndroidObservationHost, device: DeviceInfo): DumpReader {
   const dumps = new Map<string, Promise<string>>();
-  let timedOut = false;
+  const deadlineMs = Date.now() + DUMP_OBSERVATION_BUDGET_MS;
   return (words) => {
-    if (timedOut) return Promise.resolve('');
     const key = words.join(' ');
-    const pending =
-      dumps.get(key) ??
-      host
-        .runAdb(device, deviceShellArgv('adb', 'shell', words), {
-          allowFailure: true,
-          timeoutMs: DUMP_READ_TIMEOUT_MS,
-        })
-        .then(
-          (result) => {
-            recordSections(device, key, result.stdout);
-            return result.stdout;
-          },
-          (error: unknown) => {
-            if (!isCommandTimeoutError(error)) throw error;
-            timedOut = true;
-            return '';
-          },
-        );
+    const cached = dumps.get(key);
+    if (cached) return cached;
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) return Promise.resolve('');
+    const pending = host
+      .runAdb(device, deviceShellArgv('adb', 'shell', words), {
+        allowFailure: true,
+        timeoutMs: remainingMs,
+      })
+      .then(
+        (result) => {
+          recordSections(device, key, result.stdout);
+          return result.stdout;
+        },
+        (error: unknown) => {
+          if (!isCommandTimeoutError(error)) throw error;
+          return '';
+        },
+      );
     dumps.set(key, pending);
     return pending;
   };
