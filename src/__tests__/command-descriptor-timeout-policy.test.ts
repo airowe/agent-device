@@ -151,7 +151,7 @@ test('request envelopes deviating from the default are bounded, reviewed sets', 
     install_source: 180_000,
     // longpress: proven by the worst-case ledger test in
     // test/integration/provider-scenarios/android-longpress-ledger.test.ts.
-    longpress: 310_000,
+    longpress: 320_000,
     // fold: proven by the worst-case ledger test in
     // test/integration/provider-scenarios/ios-fold.test.ts.
     fold: 255_000,
@@ -262,7 +262,7 @@ test('interaction --settle budgets add post-action settle time on top of the nor
       positionals: ['300', '500', '120000'],
       flags: {},
     }),
-    310_000,
+    320_000,
   );
   // Bare --settle adds its default budget after the longpress-specific base,
   // so a maximum hold still leaves room for post-action observation.
@@ -271,7 +271,7 @@ test('interaction --settle budgets add post-action settle time on top of the nor
       ...base,
       flags: { settle: true },
     }),
-    350_000,
+    360_000,
   );
   // Bare timeoutMs without --settle remains wire-compatible with older touch
   // command clients: it is ignored instead of opting into settle semantics.

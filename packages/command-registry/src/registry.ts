@@ -1298,10 +1298,10 @@ export const RAW_COMMAND_DESCRIPTORS = [
     frameworkTier: 'extended',
     timeoutPolicy: {
       ...SETTLE_FLAG_PRESERVE_DAEMON_TIMEOUT_POLICY,
-      // Covers the Android cold-helper worst case at the maximum hold plus the
-      // daemon-result margin. Proven by the ledger test:
+      // Android cold-helper worst case at the maximum hold plus the daemon-result margin, applied
+      // to every platform. Proven by the ledger test:
       // test/integration/provider-scenarios/android-longpress-ledger.test.ts.
-      envelopeMs: 310_000,
+      envelopeMs: 320_000,
     },
     postActionObservation: postActionObservation('longpress'),
     batchable: true,

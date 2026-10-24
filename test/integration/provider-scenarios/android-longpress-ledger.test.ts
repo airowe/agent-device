@@ -17,8 +17,15 @@ import { createProviderScenarioHarness } from './harness.ts';
 
 // The longpress envelope must outlast the Android cold-helper route's worst case plus the margin
 // that lets the daemon's own typed result arrive first; otherwise the client gives up on a request
-// the device is still finishing. This test proves that bound against the real route: it imports no platform-android step figure, so it stays true
-// however the route's steps change. The only imported figure is the hold cap the validator reads.
+// the device is still finishing. This test proves that bound against the real route: it imports no
+// platform-android step figure, so it stays true however the route's steps change. The only
+// imported figure is the hold cap the validator reads.
+//
+// One step stays outside this ledger: replacing the helper stops a running snapshot helper session
+// first, and that hand-off waits on host-side timers in
+// packages/platform-android/src/snapshot-helper-session-lifecycle.ts (stop request, graceful exit,
+// process exit) rather than on a provider call this fake can charge. Its device-side stop does go
+// through the provider and is charged when it runs.
 type LongPressLedgerCall = Readonly<{
   tool: 'exec' | 'install' | 'pull';
   args: readonly string[];
@@ -60,11 +67,12 @@ function createLongPressLedgerAdbProvider(params: {
     options?: AndroidAdbExecutorOptions,
   ): void => {
     if (!params.isTracking()) return;
+    const timeoutMs = options?.timeoutMs;
     assert.ok(
-      Number.isFinite(options?.timeoutMs) && options!.timeoutMs! > 0,
+      timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0,
       `longpress ledger call has no bounded timeoutMs: ${tool} ${args.join(' ')}`,
     );
-    const call: LongPressLedgerCall = { tool, args: [...args], timeoutMs: options!.timeoutMs! };
+    const call: LongPressLedgerCall = { tool, args: [...args], timeoutMs };
     ledger.push(call);
     params.onCall(call);
   };
@@ -72,6 +80,9 @@ function createLongPressLedgerAdbProvider(params: {
     snapshotHelperArtifact: ANDROID_SNAPSHOT_HELPER_FIXTURE_ARTIFACT,
     exec: async (args, options) => {
       record('exec', args, options);
+      // A dump without a focus line sends the dialog and foreground observations through every
+      // variant they may read, so each one spends its whole budget.
+      if (params.isTracking() && isObservationDump(args)) return ok;
       if (args.includes('--show-versioncode') && args.includes(HELPER.packageName)) {
         return {
           ...ok,
@@ -113,6 +124,12 @@ function createLongPressLedgerAdbProvider(params: {
   return { provider, ledger };
 }
 
+function isObservationDump(args: readonly string[]): boolean {
+  return (
+    args[0] === 'shell' && args[1] === 'dumpsys' && (args[2] === 'window' || args[2] === 'activity')
+  );
+}
+
 function gestureDurationMs(call: LongPressLedgerCall): number | undefined {
   const payloadIndex = call.args.indexOf('payloadBase64');
   if (payloadIndex < 0) return undefined;
@@ -145,6 +162,10 @@ function assertLongPressLedgerPhaseCoverage(ledger: readonly LongPressLedgerCall
   assert.ok(
     ledger.some((call) => call.args[0] === 'uninstall'),
     `ledger is missing the incompatible-helper uninstall${printed}`,
+  );
+  assert.ok(
+    ledger.some((call) => call.tool === 'exec' && isObservationDump(call.args)),
+    `ledger is missing the dialog and foreground observation dumps${printed}`,
   );
   const gestures = ledger.filter(isGesture);
   assert.equal(gestures.length, 1, `ledger must record exactly one gesture dispatch${printed}`);
