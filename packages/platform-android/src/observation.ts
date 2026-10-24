@@ -97,11 +97,12 @@ function createDumpReader(host: AndroidObservationHost, device: DeviceInfo): Dum
     const cached = dumps.get(key);
     if (cached) return cached;
     deadline ??= Deadline.fromTimeoutMs(DUMP_OBSERVATION_BUDGET_MS);
-    if (deadline.isExpired()) return Promise.resolve('');
+    const remainingMs = deadline.remainingMs();
+    if (remainingMs <= 0) return Promise.resolve('');
     const pending = host
       .runAdb(device, deviceShellArgv('adb', 'shell', words), {
         allowFailure: true,
-        timeoutMs: deadline.remainingMs(),
+        timeoutMs: remainingMs,
       })
       .then(
         (result) => {
