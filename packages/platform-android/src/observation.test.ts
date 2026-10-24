@@ -257,3 +257,34 @@ test('the helper focus call before the first dump does not spend the dump budget
 
   expect(slowFocus.timeouts[0]).toBe(unhurried.timeouts[0]);
 });
+
+test('a read that starts with the budget nearly spent never passes a non-positive timeout', async () => {
+  // Each clock read advances 1 ms, so two reads of one deadline disagree by one millisecond.
+  const originMs = Date.now();
+  let elapsedMs = 0;
+  const now = vi.spyOn(Date, 'now').mockImplementation(() => {
+    elapsedMs += 1;
+    return originMs + elapsedMs;
+  });
+  const timeouts: number[] = [];
+  const host: AndroidObservationHost = {
+    ...hostFor(new Map()),
+    runAdb: vi.fn(async (_device, _args, options) => {
+      const timeoutMs = options?.timeoutMs ?? Number.POSITIVE_INFINITY;
+      timeouts.push(timeoutMs);
+      elapsedMs += timeoutMs - 2;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }),
+  };
+  try {
+    await createAndroidObservationAdapter(host).readAppState({
+      ...device,
+      id: 'emulator-rollover',
+    });
+  } finally {
+    now.mockRestore();
+  }
+
+  expect(timeouts.length).toBeGreaterThan(1);
+  for (const timeoutMs of timeouts) expect(timeoutMs).toBeGreaterThan(0);
+});
