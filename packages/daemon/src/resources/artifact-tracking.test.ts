@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { buffer } from 'node:stream/consumers';
 import { gunzipSync } from 'node:zlib';
-import { expect, test, vi } from 'vitest';
+import { expect, test, vi, type MockInstance } from 'vitest';
 import { mkdtempForTestSync } from '@agent-device/test-kit';
 import { AppError, isRequestCanceledError, normalizeError } from '@agent-device/kernel/errors';
 import { createRuntimeStateHandle } from '@agent-device/host-kit/runtime-slots';
@@ -16,6 +16,9 @@ import {
   trackUploadedArtifact,
   type OpenedDownloadableArtifact,
 } from './artifact-tracking.ts';
+
+/** The registration expiry, the download deadline and the archive timeout each run for 15 minutes. */
+const ARTIFACT_LIFETIME_MS = 15 * 60 * 1000;
 
 test.each(['cleanup', 'expiry'] as const)(
   '%s aborts an inventory-only archive and removes its source after tar settles',
@@ -53,7 +56,7 @@ test.each(['cleanup', 'expiry'] as const)(
         id = runtime.run(() =>
           trackDownloadableArtifact({ artifactPath, artifactType: 'trace-log' }),
         );
-        expire = timers.mock.calls.find(([, delay]) => delay === 15 * 60 * 1000)?.[0];
+        expire = timers.mock.calls.find(([, delay]) => delay === ARTIFACT_LIFETIME_MS)?.[0];
       } finally {
         timers.mockRestore();
       }
@@ -240,7 +243,7 @@ test.each(['deadline-aborted', 'late-aborted'] as const)(
       const first = runtime.run(() => openDownloadableArtifact(id, undefined, process.env));
       openings.push(first);
       void first.catch(() => {});
-      const deadline = timers.mock.calls.find(([, delay]) => delay === 15 * 60 * 1000)?.[0];
+      const deadline = timers.mock.calls.find(([, delay]) => delay === ARTIFACT_LIFETIME_MS)?.[0];
       timers.mockRestore();
       if (failure === 'late-aborted') await succeeded;
       expect(deadline).toBeTypeOf('function');
@@ -384,6 +387,23 @@ test('disposing every archive waiter aborts the shared build and removes its tem
     archive.mockRestore();
   }
 });
+
+/** Runs `action` and returns the first timer it scheduled with `delayMs`, ignoring timers with other delays. */
+function firstTimerScheduledDuring<T>(
+  timers: MockInstance<typeof setTimeout>,
+  delayMs: number,
+  action: () => T,
+): { value: T; callback: () => void; timer: ReturnType<typeof setTimeout> } {
+  const firstCall = timers.mock.calls.length;
+  const value = action();
+  const offset = timers.mock.calls.slice(firstCall).findIndex(([, delay]) => delay === delayMs);
+  if (offset < 0) throw new Error(`the action scheduled no ${delayMs} ms timer`);
+  return {
+    value,
+    callback: timers.mock.calls[firstCall + offset]![0] as () => void,
+    timer: timers.mock.results[firstCall + offset]!.value as ReturnType<typeof setTimeout>,
+  };
+}
 
 async function closed(stream: OpenedDownloadableArtifact['stream']): Promise<void> {
   if (!stream.closed) await once(stream, 'close');
@@ -531,14 +551,18 @@ test.each(['expiry-first', 'deadline-first'] as const)(
     const { spy: removed, removal } = watchRemovals();
     let download: OpenedDownloadableArtifact | undefined;
     try {
-      const id = runtime.run(() =>
-        trackDownloadableArtifact({ artifactPath, artifactType: 'trace-log' }),
+      const {
+        value: id,
+        callback: expire,
+        timer: expiryTimer,
+      } = firstTimerScheduledDuring(timers, ARTIFACT_LIFETIME_MS, () =>
+        runtime.run(() => trackDownloadableArtifact({ artifactPath, artifactType: 'trace-log' })),
       );
-      const expire = timers.mock.calls.at(-1)![0];
-      const expiryTimer = timers.mock.results.at(-1)!.value;
-      const timerIndex = timers.mock.calls.length;
-      const opening = runtime.run(() => openDownloadableArtifact(id, undefined, process.env));
-      const deadline = timers.mock.calls[timerIndex]![0];
+      const { value: opening, callback: deadline } = firstTimerScheduledDuring(
+        timers,
+        ARTIFACT_LIFETIME_MS,
+        () => runtime.run(() => openDownloadableArtifact(id, undefined, process.env)),
+      );
       download = await opening;
       const archiveDir = path.dirname(String(download.stream.path));
       download.stream.resume();

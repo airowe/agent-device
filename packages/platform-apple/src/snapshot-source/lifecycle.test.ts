@@ -603,7 +603,7 @@ test('a capture whose exit status stays unread ends at its own deadline without 
   const helper = () => fixture.processes[0]!;
   const manager = new SnapshotBridgeManager(fixture.host);
 
-  // Virtual time stands still through the host's real directory setup, so the 120 ms budget covers only
+  // Manual virtual time advances only when the test advances it, so the 120 ms budget covers only
   // the connect retry and the exit wait this test is about, however loaded the run is.
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   const request = manager
